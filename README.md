@@ -1,36 +1,200 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 📄 Next.js RAG 文档问答助手
 
-## Getting Started
+一个基于 Next.js 构建的检索增强生成（RAG）文档问答系统，支持上传 PDF/DOCX 文档并进行智能问答。
 
-First, run the development server:
+## ✨ 功能特性
+
+- 📤 文档上传：支持 PDF / DOCX，前端拖拽 + 后端解析（`pdf-parse` / `mammoth`）
+- 🔍 语义检索：问题 → Embedding → 余弦相似度 Top‑K（向量库在 Node 内存中）
+- 💬 对话界面：React 聊天 UI（消息气泡、loading、清空对话）
+- 📎 引用追溯：回答下方可展开来源片段 + 相似度分数
+- ⚡ 流式响应：SSE 推流 → 打字机逐字渲染（不等地生成完再显示）
+- 🧠 多轮对话：最近 N 轮 history 拼进 messages，可连续追问
+
+## 🛠️ 技术栈
+
+| 层级 | 选型 | 说明 |
+|---|---|---|
+| 前端 | Next.js 15 App Router + React + TypeScript + TailwindCSS | UI / SSE 流式消费 |
+| 文档解析 | `pdf-parse` + `mammoth` | PDF / DOCX → 纯文本 |
+| 文本分块 | 自研（段落优先，按长度 + overlap 保底） | 避免切断句子 |
+| 向量化 | DeepSeek Embedding API（兼容 OpenAI 格式） | 文本 → 1536 维向量 |
+| 向量存储 | InMemoryVectorStore（内存数组 + 余弦相似度） | 可替换为 Pinecone/Qdrant/pgvector |
+| 生成问答 | DeepSeek Chat API（stream） | 流式文本生成 |
+| 流式协议 | SSE（Server‑Sent Events） | `text/event-stream` |
+
+## 🏗️ 项目架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        前端层 (Frontend)                        │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  React 聊天界面 (app/page.tsx)                           │  │
+│  │  - 文件上传组件                                          │  │
+│  │  - 消息列表展示                                          │  │
+│  │  - 流式响应渲染（SSE 流式逐字渲染）                       │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      API 层 (Next.js Routes)                   │
+│  ┌─────────────────┐          ┌─────────────────┐             │
+│  │  /api/upload    │          │  /api/chat      │             │
+│  │  - 文件解析     │          │  - 语义搜索     │             │
+│  │  - 文本分块     │          │  - 上下文构建   │             │
+│  │  - 向量化入库   │          │  - 调用大模型   │             │
+│  └─────────────────┘          └─────────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     业务逻辑层 (Lib)                           │
+│  ┌───────────────┐ ┌───────────────┐ ┌───────────────────┐     │
+│  │   chunk.ts    │ │ embedding.ts  │ │  vectorStore.ts   │     │
+│  │   文本分块    │ │   向量化      │ │   向量存储/搜索   │     │
+│  └───────────────┘ └───────────────┘ └───────────────────┘     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      外部服务 (External)                       │
+│  ┌─────────────────────────┐ ┌─────────────────────────┐       │
+│  │   DeepSeek Embedding    │ │   DeepSeek Chat API     │       │
+│  │   (文本→向量)           │ │   (流式对话生成)            │       │
+│  └─────────────────────────┘ └─────────────────────────┘       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**RAG 流程说明**:
+
+1. **文档上传阶段**:
+   - 用户上传 PDF/DOCX 文件 → 解析提取文本 → 分块处理 → 向量化 → 存入向量库
+
+2. **问答阶段**:
+   - 用户提问 → 问题向量化 → 向量相似度搜索 → 获取相关文档片段 → 构建提示词上下文 → 调用大模型生成回答 → 流式返回结果
+
+## 📁 项目结构
+
+```
+nextjs-RAG/
+├── app/
+│   ├── api/
+│   │   ├── chat/route.ts      # 聊天问答 API
+│   │   └── upload/route.ts    # 文件上传 API
+│   ├── page.tsx               # 主页面（聊天界面）
+│   ├── layout.tsx             # 布局组件
+│   └── globals.css            # 全局样式
+├── lib/
+│   ├── chunk.ts               # 文本分块工具
+│   ├── embedding.ts           # 向量化工具
+│   └── vectorStore.ts         # 向量库实现
+├── public/                    # 静态资源
+├── package.json
+└── tsconfig.json
+```
+
+## 🚀 快速开始
+
+### 安装依赖
+
+```bash
+npm install
+# 或
+pnpm install
+```
+
+### 运行开发服务器
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
+# 或
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+访问 http://localhost:3000 查看应用。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 构建生产版本
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm start
+```
 
-## Learn More
+## 📖 使用说明
 
-To learn more about Next.js, take a look at the following resources:
+1. **上传文档**：点击上传区域，选择 PDF 或 DOCX 文件
+2. **等待处理**：系统会自动解析文档、分块并向量化
+3. **开始提问**：在输入框中输入您的问题，点击发送
+4. **查看来源**：展开回答下方的"查看来源"可查看引用的文档片段
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 🔧 API 接口
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### POST /api/upload
 
-## Deploy on Vercel
+上传文档并向量化
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**请求**:
+```multipart/form-data
+file: <PDF或DOCX文件>
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**响应**:
+```json
+{
+  "success": true,
+  "fileName": "document.pdf",
+  "textLength": 12345,
+  "chunksCount": 15,
+  "stats": {
+    "totalRecords": 15,
+    "sources": ["document.pdf"]
+  }
+}
+```
+
+### POST /api/chat
+
+发送问答请求
+
+**请求**:
+```json
+{
+  "message": "您的问题",
+  "history": []
+}
+```
+
+**响应**: 流式 SSE 响应
+
+## 🤔 设计决策
+
+### 为什么用内存向量库而非 Pinecone/Qdrant？
+- **Demo 阶段**：零依赖、启动快、便于调试
+- **可切换性**：架构上预留了接口抽象层，生产环境可无缝切换到 Pinecone 或 pgvector，只需替换 `vectorStore` 实现
+
+### 分块策略为什么按段落优先？
+- 段落是自然语义单元，切断段落会破坏上下文连贯性
+- 实测表明，按段落切分的检索准确率比固定长度切分更高
+
+### 为什么用 DeepSeek 而非 OpenAI？
+- 国内直连，无需代理，延迟更低
+- 兼容 OpenAI 接口格式，切换成本极低
+- 性价比更高，适合原型验证
+
+## 🧩 实现要点
+
+- **分块（chunk.ts）**：段落优先 → 过长段按句子边界保底拆分；每块 ~300–800 字符，不做硬等长截断  
+- **向量化（embedding.ts）**：调用 DeepSeek Embedding（`/embeddings`），取 1536 维向量  
+- **检索（vectorStore.ts）**：内存数组 + 余弦相似度 Top‑K；返回 `{ text, meta, score }` 供前端溯源  
+- **生成（chat/route.ts）**：拼装 `system + history + {role:"user", content: context+question}` → DeepSeek Chat stream → SSE 推给前端
+
+
+## 📄 支持的文件格式
+
+- PDF (.pdf)
+- DOCX (.docx)
+
+## 📜 许可证
+
+MIT License
