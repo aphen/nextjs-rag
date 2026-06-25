@@ -64,10 +64,10 @@ export async function POST(request: Request) {
     console.log(`分块完成: ${chunks.length} 块`);
     
     // 3.2 向量化 + 入库
-    await vectorStore.addChunks(chunks, file.name);
+    await vectorStore.addChunks(chunks);
     
     // 3.3 获取统计
-    const stats = vectorStore.stats();
+    const stats = vectorStore.getStats();
     console.log('========================================');
 
     // 清理临时文件

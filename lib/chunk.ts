@@ -2,13 +2,18 @@
  * 文本分块函数
  * 策略：按段落优先，段落过长时按句子切分，尽量保持语义完整
  */
+// export interface ChunkResult {
+//     id: string;      // 块唯一标识，如 "chunk-0", "chunk-1"
+//     text: string;    // 块文本内容
+//     index: number;   // 块在原文档中的顺序
+//   }
+// langchain 的 Document 类已经包含了 pageContent 和 metadata 属性，可以直接使用
 export interface ChunkResult {
-    id: string;      // 块唯一标识，如 "chunk-0", "chunk-1"
-    text: string;    // 块文本内容
-    index: number;   // 块在原文档中的顺序
-  }
-  
-  export function splitTextIntoChunks(text: string, maxChunkSize = 500): ChunkResult[] {
+  pageContent: string;   // 原 text → pageContent
+  metadata: Record<string, unknown>; // 新增 metadata，可携带来源等信息
+}
+  // source?: string,          // 可选：文档来源（文件名）
+  export function splitTextIntoChunks(text: string, source?: string, maxChunkSize = 500): ChunkResult[] {
     // 1. 按换行符分割成段落，过滤掉空段落
     const paragraphs = text.split(/\n+/).filter(p => p.trim().length > 0);
     
@@ -22,10 +27,10 @@ export interface ChunkResult {
         // 先把当前累积的 chunk 存起来（如果有的话）
         if (currentChunk.trim()) {
           chunks.push({
-            id: `chunk-${chunkIndex}`,
-            text: currentChunk.trim(),
-            index: chunkIndex++,
+            pageContent: currentChunk.trim(),
+            metadata: { source, index: chunkIndex },
           });
+          chunkIndex++;
           currentChunk = '';
         }
         
@@ -36,10 +41,10 @@ export interface ChunkResult {
           if ((currentChunk + sentence).length > maxChunkSize) {
             if (currentChunk.trim()) {
               chunks.push({
-                id: `chunk-${chunkIndex}`,
-                text: currentChunk.trim(),
-                index: chunkIndex++,
+                pageContent: currentChunk.trim(),
+                metadata: { source, index: chunkIndex },
               });
+              chunkIndex++;
             }
             currentChunk = sentence + '。';
           } else {
@@ -52,10 +57,10 @@ export interface ChunkResult {
         // 如果当前块加上这个段落会超出最大长度，先把当前块存起来
         if ((currentChunk + paragraph).length > maxChunkSize) {
           chunks.push({
-            id: `chunk-${chunkIndex}`,
-            text: currentChunk.trim(),
-            index: chunkIndex++,
+            pageContent: currentChunk.trim(),
+            metadata: { source, index: chunkIndex },
           });
+          chunkIndex++;
           currentChunk = paragraph + '\n';
         } else {
           currentChunk += paragraph + '\n';
@@ -66,10 +71,10 @@ export interface ChunkResult {
     // 处理最后一块
     if (currentChunk.trim()) {
       chunks.push({
-        id: `chunk-${chunkIndex}`,
-        text: currentChunk.trim(),
-        index: chunkIndex,
+        pageContent: currentChunk.trim(),
+        metadata: { source, index: chunkIndex },
       });
+      chunkIndex++;
     }
   
     return chunks;

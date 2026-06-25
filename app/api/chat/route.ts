@@ -1,5 +1,33 @@
 import { NextResponse } from "next/server";
 import { vectorStore } from "@/lib/vectorStore";
+import { getCurrentTimeTool, searchDocsTool, executeTool } from "@/lib/tools";
+import { wrapStreamWithSources, simulateStream } from "@/lib/streamUtils";
+import { isToolMessage } from "openai/lib/chatCompletionUtils.mjs";
+
+type SourceItem = {
+  text: string;
+  score: number;
+  source?: string;
+};
+
+type ToolCall = {
+  id: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+type ToolResult = {
+  toolCall: ToolCall;
+  result: string;
+};
+
+type SearchDocResult = {
+  text: string;
+  score: number;
+  source?: string;
+};
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,10 +49,6 @@ export async function POST(request: Request) {
 
     // 1. 从向量库检索相关文档片段
     const relevantDocs = await vectorStore.search(message, 3);
-    const sources = relevantDocs.map((doc) => ({
-      text: doc.text.slice(0, 200), // 只取前200字作为引用摘要
-      score: doc.score,
-    }));
 
     // if (relevantDocs.length === 0) {
     //   return NextResponse.json({
@@ -59,77 +83,126 @@ export async function POST(request: Request) {
       {
         role: "system",
         content:
-          '你是智能助手。\n' +
-          '1. 【最高优先级】如果用户上传了文档，必须分析文档内容。绝对禁止在未分析文档的情况下进行闲聊。\n' +
-          '2. 如果文档为空或未上传，才作为朋友聊天。\n' +
-          '3. 回答必须简短直接，不要解释规则。\n' +
-          '4. 必须遵循用户的明确指令（如“分析文档”）。'
+          "你是智能助手。\n" +
+          "1. 【最高优先级】如果用户上传了文档，必须分析文档内容。绝对禁止在未分析文档的情况下进行闲聊。\n" +
+          "2. 如果文档为空或未上传，才作为朋友聊天。\n" +
+          "3. 回答必须简短直接，不要解释规则。\n" +
+          "4. 必须遵循用户的明确指令（如“分析文档”）。",
       },
       // ★★★ 重点：先放历史记忆 ★★★
       ...cleanHistory,
       // ★★★ 重点：最后放当前问题（包含文档上下文） ★★★
       { role: "user", content: prompt },
     ];
-console.log('最终发给大模型的 messages:', JSON.stringify(allMessages, null, 2));
-    // 4. 调用大模型（这里以 DeepSeek 为例，你也可以换成其他）
-    const response = await fetch(
-      "https://api.deepseek.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: allMessages,
-          stream: true, // 先不用流式，跑通再说
-        }),
-      },
-    );
 
-    // 如果上游报错，把错误信息透传出来方便调试
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error("SiliconFlow upstream error:", response.status, errText);
-      return new Response(
-        JSON.stringify({ error: `上游错误 ${response.status}: ${errText}` }),
-        { status: 502 },
+    // 第一次调用（非流式，判断是否需要调用工具）
+    const currentMessages = [...allMessages];
+    const maxRounds = 3;
+
+    for (let round = 0; round < maxRounds; round++) {
+      const response = await fetch(
+        "https://api.deepseek.com/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: currentMessages,
+            tools: [getCurrentTimeTool, searchDocsTool],
+            tool_choice: "auto",
+            stream: false,
+          }),
+        },
       );
+
+      const data = await response.json();
+      const choice = data.choices?.[0];
+
+      if (choice.finish_reason === "stop") {
+        const sources = relevantDocs.map((doc) => ({
+          text: doc.text.slice(0, 200), // 只取前200字作为引用摘要
+          score: doc.score,
+        }));
+        // 直接回答，模拟流式返回
+        return simulateStream(choice.message.content, sources);
+      } else if (choice.finish_reason === "tool_calls") {
+        // 执行所有工具调用
+        // 执行所有工具调用，并收集 sources
+        const sources: SourceItem[] = [];
+        const toolResults: ToolResult[] = [];
+        
+        for (const toolCall of choice.message.tool_calls) {
+          const args = JSON.parse(toolCall.function.arguments);
+          const result = await executeTool(toolCall.function.name, args);
+          toolResults.push({ toolCall, result });
+
+          if (toolCall.function.name === "search_docs") {
+            const docs = JSON.parse(result);
+            sources.push(
+              ...docs.map((d: SearchDocResult) => ({
+                text: d.text.slice(0, 200),
+                score: d.score,
+                source: d.source || "",
+              })),
+            );
+          }
+        }
+
+        // 构造第二次请求的 messages
+        const secondMessages = [
+          ...currentMessages,
+          choice.message,
+          ...toolResults.map((r) => ({
+            role: "tool" as const,
+            tool_call_id: r.toolCall.id,
+            content: r.result,
+          })),
+        ];
+
+        // ---------- 第二次请求（流式）----------
+        const secondRes = await fetch(
+          "https://api.deepseek.com/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "deepseek-chat",
+              messages: secondMessages,
+              stream: true,
+            }),
+          },
+        );
+
+        if (!secondRes.ok) {
+          const err = await secondRes.text();
+          return new Response(
+            JSON.stringify({ error: `第二次请求失败: ${err}` }),
+            { status: 500 },
+          );
+        }
+
+        // 包装流并追加 sources
+        const wrappedStream = wrapStreamWithSources(secondRes.body, sources);
+        return new Response(wrappedStream, {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      } else {
+        // 其他情况（如 length），直接返回错误
+        return new Response(JSON.stringify({ error: "模型响应异常" }), {
+          status: 500,
+        });
+      }
     }
 
-    // 3. 创建一个 TransformStream 来拦截并追加 sources event
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
-    // 读取上游流，并转发到 writable
-    (async () => {
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        // 直接转发上游数据
-        await writer.write(
-          encoder.encode(decoder.decode(value, { stream: true })),
-        );
-      }
-      // 上游流结束后，追加 sources event
-      const sourcesEvent = `data: ${JSON.stringify({ type: "sources", sources })}\n\n`;
-      await writer.write(encoder.encode(sourcesEvent));
-      await writer.close();
-    })();
-
-    // const data = await response.json();
-    // const reply =
-    //   data.choices?.[0]?.message?.content || "抱歉，我暂时无法回答。";
-    return new Response(readable, {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      },
+    // 超过最大轮数
+    return new Response(JSON.stringify({ error: "工具调用次数过多" }), {
+      status: 400,
     });
     // return NextResponse.json({ reply });
   } catch (error) {
