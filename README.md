@@ -1,4 +1,5 @@
 # 📄 Next.js RAG 文档问答助手
+  https://nextjs-rag-indol.vercel.app/
 
 一个基于 Next.js 构建的检索增强生成（RAG）文档问答系统，支持上传 PDF/DOCX 文档并进行智能问答。
 
@@ -16,7 +17,7 @@
 | 层级 | 选型 | 说明 |
 |---|---|---|
 | 前端 | Next.js 15 App Router + React + TypeScript + TailwindCSS | UI / SSE 流式消费 |
-| 文档解析 | `pdf-parse` + `mammoth` | PDF / DOCX → 纯文本 |
+| 文档解析 | `langchain`| PDF / DOCX → 纯文本 |
 | 文本分块 | 自研（段落优先，按长度 + overlap 保底） | 避免切断句子 |
 | 向量化 | DeepSeek Embedding API（兼容 OpenAI 格式） | 文本 → 1536 维向量 |
 | 向量存储 | InMemoryVectorStore（内存数组 + 余弦相似度） | 可替换为 Pinecone/Qdrant/pgvector |

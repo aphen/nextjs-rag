@@ -1,34 +1,47 @@
-// import { MemoryVectorStore } from "langchain";
-import   { MemoryVectorStore }   from "@langchain/classic/vectorstores/memory";
+// import   { MemoryVectorStore }   from "@langchain/classic/vectorstores/memory";
+import SupabaseVectorStore from "./supabaseVectorStore";
 import { Document } from '@langchain/core/documents';
 import { getEmbedding, getEmbeddingsBatch } from './embedding';
 import { ChunkResult } from './chunk';
+import { supabase } from "./supabase";
 
-// 向量库中的一条记录
-interface VectorRecord {
-  id: string;                    // 块 ID
-  text: string;                  // 原始文本
-  vector: number[];              // 向量
-  metadata?: Record<string, unknown>; // 附加信息（来源文件名、块序号等）
-}
+// // 向量库中的一条记录
+// interface VectorRecord {
+//   id: string;                    // 块 ID
+//   text: string;                  // 原始文本
+//   vector: number[];              // 向量
+//   metadata?: Record<string, unknown>; // 附加信息（来源文件名、块序号等）
+// }
 
 // 向量库包装器
 class wrapperVectorStore {
-  private store!: MemoryVectorStore;
+  // private store!: MemoryVectorStore;
+  private store!: SupabaseVectorStore;
   async initialize() {
     // 首次初始化空 store
-    this.store = new MemoryVectorStore({
-      embedQuery: getEmbedding,
-      embedDocuments: async (texts: string[]) => {
-        const results = await Promise.all(texts.map(t => getEmbedding(t)));
-        return results;
-      },
-    });
+    this.store = new SupabaseVectorStore();
+    // this.store = new MemoryVectorStore({
+    //   embedQuery: getEmbedding,
+    //   embedDocuments: async (texts: string[]) => {
+    //     const results = await Promise.all(texts.map(t => getEmbedding(t)));
+    //     return results;
+    //   },
+    // });
   }
   async addChunks(chunks: ChunkResult[], source?: string): Promise<void> {
     if (!this.store) {
       await this.initialize();
     }
+     // 如果传了 source（文件名），先删除该 source 下的旧数据
+     console.log(source, this.store.getTableName(), '正在删除旧数据...');
+    if (source) {
+      const { error } = await supabase
+        .from(this.store.getTableName())
+        .delete()
+        .eq('metadata->>source', source);
+      if (error) throw error;
+    }
+
     const docs = chunks.map((chunk, index) => new Document({
       pageContent: chunk.pageContent,
       metadata: { source, index },
@@ -39,7 +52,9 @@ class wrapperVectorStore {
     if (!this.store) {
       await this.initialize();
     }
+    console.log('正在向量化用户问题...');
     const results = await this.store.similaritySearchWithScore(query, topK);
+    console.log(`搜索完成，找到 ${results.length} 条相关结果`);
     return results.map(([doc, score]: [Document, number]) => ({
       text: doc.pageContent,
       score: score,
@@ -47,9 +62,13 @@ class wrapperVectorStore {
     }));
     
   }
-  getStats() {
+  async getStats() {
+    if (!this.store) {
+      await this.initialize();
+    }
     // LangChain 的 MemoryVectorStore 不直接暴露文档数，可通过内部 documents 属性获取
-    const count = (this.store as MemoryVectorStore)?.memoryVectors?.length || 0;
+    // const count = (this.store as MemoryVectorStore)?.memoryVectors?.length || 0;
+    const count = await this.store.getTotalDocuments();
     return { totalRecords: count };
   }
 }
